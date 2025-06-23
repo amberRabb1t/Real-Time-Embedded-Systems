@@ -1,0 +1,67 @@
+time ./rtes-okx-raspi; echo $?
+
+WebSocket connection established
+Received:   Event: subscribe	Symbol: BTC-USDT	Channel: trades		ConnectionID: 30c35dea
+Received:   Event: subscribe	Symbol: ADA-USDT	Channel: trades		ConnectionID: 30c35dea
+Received:   Event: subscribe	Symbol: ETH-USDT	Channel: trades		ConnectionID: 30c35dea
+Received:   Event: subscribe	Symbol: DOGE-USDT	Channel: trades		ConnectionID: 30c35dea
+Received:   Event: subscribe	Symbol: XRP-USDT	Channel: trades		ConnectionID: 30c35dea
+Received:   Event: subscribe	Symbol: SOL-USDT	Channel: trades		ConnectionID: 30c35dea
+Received:   Event: subscribe	Symbol: LTC-USDT	Channel: trades		ConnectionID: 30c35dea
+Received:   Event: subscribe	Symbol: BNB-USDT	Channel: trades		ConnectionID: 30c35dea
+WebSocket connection closed
+
+WebSocket connection established
+Received:   Event: subscribe	Symbol: BTC-USDT	Channel: trades		ConnectionID: 0ee9abb6
+Received:   Event: subscribe	Symbol: ADA-USDT	Channel: trades		ConnectionID: 0ee9abb6
+Received:   Event: subscribe	Symbol: ETH-USDT	Channel: trades		ConnectionID: 0ee9abb6
+Received:   Event: subscribe	Symbol: DOGE-USDT	Channel: trades		ConnectionID: 0ee9abb6
+Received:   Event: subscribe	Symbol: XRP-USDT	Channel: trades		ConnectionID: 0ee9abb6
+Received:   Event: subscribe	Symbol: SOL-USDT	Channel: trades		ConnectionID: 0ee9abb6
+Received:   Event: subscribe	Symbol: LTC-USDT	Channel: trades		ConnectionID: 0ee9abb6
+Received:   Event: subscribe	Symbol: BNB-USDT	Channel: trades		ConnectionID: 0ee9abb6
+WebSocket connection closed
+
+WebSocket connection established
+Received:   Event: subscribe	Symbol: BTC-USDT	Channel: trades		ConnectionID: b7c3f135
+Received:   Event: subscribe	Symbol: ADA-USDT	Channel: trades		ConnectionID: b7c3f135
+Received:   Event: subscribe	Symbol: ETH-USDT	Channel: trades		ConnectionID: b7c3f135
+Received:   Event: subscribe	Symbol: DOGE-USDT	Channel: trades		ConnectionID: b7c3f135
+Received:   Event: subscribe	Symbol: XRP-USDT	Channel: trades		ConnectionID: b7c3f135
+Received:   Event: subscribe	Symbol: SOL-USDT	Channel: trades		ConnectionID: b7c3f135
+Received:   Event: subscribe	Symbol: LTC-USDT	Channel: trades		ConnectionID: b7c3f135
+Received:   Event: subscribe	Symbol: BNB-USDT	Channel: trades		ConnectionID: b7c3f135
+WebSocket connection closed
+
+WebSocket connection established
+Received:   Event: subscribe	Symbol: BTC-USDT	Channel: trades		ConnectionID: 2e6f10d0
+Received:   Event: subscribe	Symbol: ADA-USDT	Channel: trades		ConnectionID: 2e6f10d0
+Received:   Event: subscribe	Symbol: ETH-USDT	Channel: trades		ConnectionID: 2e6f10d0
+Received:   Event: subscribe	Symbol: DOGE-USDT	Channel: trades		ConnectionID: 2e6f10d0
+Received:   Event: subscribe	Symbol: XRP-USDT	Channel: trades		ConnectionID: 2e6f10d0
+Received:   Event: subscribe	Symbol: SOL-USDT	Channel: trades		ConnectionID: 2e6f10d0
+Received:   Event: subscribe	Symbol: LTC-USDT	Channel: trades		ConnectionID: 2e6f10d0
+Received:   Event: subscribe	Symbol: BNB-USDT	Channel: trades		ConnectionID: 2e6f10d0
+WebSocket connection closed
+
+WebSocket connection established
+Received:   Event: subscribe	Symbol: BTC-USDT	Channel: trades		ConnectionID: 08c14525
+Received:   Event: subscribe	Symbol: ADA-USDT	Channel: trades		ConnectionID: 08c14525
+Received:   Event: subscribe	Symbol: ETH-USDT	Channel: trades		ConnectionID: 08c14525
+Received:   Event: subscribe	Symbol: DOGE-USDT	Channel: trades		ConnectionID: 08c14525
+Received:   Event: subscribe	Symbol: XRP-USDT	Channel: trades		ConnectionID: 08c14525
+Received:   Event: subscribe	Symbol: SOL-USDT	Channel: trades		ConnectionID: 08c14525
+Received:   Event: subscribe	Symbol: LTC-USDT	Channel: trades		ConnectionID: 08c14525
+Received:   Event: subscribe	Symbol: BNB-USDT	Channel: trades		ConnectionID: 08c14525
+^C
+Caught SIGINT, shutting down..
+Joined producer thread.
+Joined consumer thread.
+Joined per-interval thread.
+WebSocket connection closed
+Cleaned up.
+
+real	3904m9.413s
+user	121m2.948s
+sys	4m12.258s
+0
