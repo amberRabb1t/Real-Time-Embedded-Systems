@@ -635,7 +635,6 @@ static void *everyInterval (void *args) {
         ++minuteCount;
 
         // Calculation of Pearson Correlation Coefficient: for each instrument, its coefficient with every other instrument.
-        //printf("\nminute %d\n", minuteCount);
         for (i = 0; i < SUBSCRIPTIONS; ++i) {
             bestIndicator = -1;
             maxPearson.coeff = 0;
@@ -643,24 +642,13 @@ static void *everyInterval (void *args) {
             for (j = 0; j < SUBSCRIPTIONS; ++j) {
                 fseek(intDat->DB->files[1][j], 0, SEEK_SET);
                 fgets(line, MAX_LINE, intDat->DB->files[1][j]);
-                /*if (i == 0 && j == 1) {
-                    printf("%s", line); //debugging print line
-                }*/
 
                 for (k = 0; k < DATAPOINTS && fgets(line, MAX_LINE, intDat->DB->files[1][j]) != NULL; ++k) {
-                    /*if (i == 0 && j == 1) {
-                        printf("%s", line); //debugging print line
-                    }*/
                     sscanf(line,"%lf,%*f,%llu\n", &avgVec[k], &pearson.corrTime);
                 }
-                /*if (i == 0 && j == 1) {
-                    for (int tdbg = 0; tdbg < DATAPOINTS; ++tdbg) {
-                        printf("%lf   ", avgVec[tdbg]);
-                    }
-                    printf("\n");
-                }*/
 
                 pearson.coeff = pearsonCorrCoeff(DATAPOINTS, priceAvg[i], avgVec);
+                
                 if (!isnan(pearson.coeff) && fabs(maxPearson.coeff) < fabs(pearson.coeff)) {
                     bestIndicator = j;
                     maxPearson.coeff = pearson.coeff;
@@ -669,20 +657,11 @@ static void *everyInterval (void *args) {
 
                 for ( ; k < minuteCount-DATAPOINTS; ++k) {
                     fgets(line, MAX_LINE, intDat->DB->files[1][j]);
-                    /*if (i == 0 && j == 1) {
-                        printf("got here. %s", line); //debugging print line
-                    }*/
                     memmove(&avgVec[0], &avgVec[1], (DATAPOINTS-1) * sizeof(avgVec[0]));
                     sscanf(line,"%lf,%*f,%llu\n", &avgVec[DATAPOINTS-1], &pearson.corrTime);
 
-                    /*if (i == 0 && j == 1) {
-                        for (int tdbg = 0; tdbg < DATAPOINTS; ++tdbg) {
-                            printf("%lf   ", avgVec[tdbg]);
-                        }
-                        printf("\n");
-                    }*/
-
                     pearson.coeff = pearsonCorrCoeff(DATAPOINTS, priceAvg[i], avgVec);
+                    
                     if (!isnan(pearson.coeff) && fabs(maxPearson.coeff) < fabs(pearson.coeff)) {
                         bestIndicator = j;
                         maxPearson.coeff = pearson.coeff;
@@ -692,20 +671,11 @@ static void *everyInterval (void *args) {
                 if (i != j) {
                     for ( ; k < minuteCount; ++k) {
                         fgets(line, MAX_LINE, intDat->DB->files[1][j]);
-                        /*if (i == 0 && j == 1) {
-                            printf("got here as well. %s", line); //debugging print line
-                        }*/
                         memmove(&avgVec[0], &avgVec[1], (DATAPOINTS-1) * sizeof(avgVec[0]));
                         sscanf(line,"%lf,%*f,%llu\n", &avgVec[DATAPOINTS-1], &pearson.corrTime);
 
-                        /*if (i == 0 && j == 1) {
-                            for (int tdbg = 0; tdbg < DATAPOINTS; ++tdbg) {
-                                printf("%lf   ", avgVec[tdbg]);
-                            }
-                            printf("\n");
-                        }*/
-
                         pearson.coeff = pearsonCorrCoeff(DATAPOINTS, priceAvg[i], avgVec);
+                        
                         if (!isnan(pearson.coeff) && fabs(maxPearson.coeff) < fabs(pearson.coeff)) {
                             bestIndicator = j;
                             maxPearson.coeff = pearson.coeff;
