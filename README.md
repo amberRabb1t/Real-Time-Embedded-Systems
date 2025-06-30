@@ -7,4 +7,5 @@ https://github.com/warmcat/libwebsockets/blob/main/READMEs/README.coding.md
 To find what the reference is talking about, CTRL+F "single"
 
 Alternate link for the example code referenced in a comment of the rtes-okx.c file:
+
 https://github.com/warmcat/libwebsockets/blob/main/minimal-examples-lowlevel/ws-client/minimal-ws-client/minimal-ws-client.c
