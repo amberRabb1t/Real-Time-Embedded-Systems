@@ -1,12 +1,10 @@
 # Real-Time-Embedded-Systems
-Repository for the final project of the "Real Time Embedded Systems" course at the Department of Electrical and Computer Engineering, Aristotle University of Thessaloniki
+This project constitutes a simple producer-consumer problem. Data comes in via WebSocket and is processed in real-time before being saved.
+The data source used is OKX, which provides a WebSocket API with multiple public channels for receiving cryptocurrency trade data in a constant stream.
 
-Alternate link for the libwebsockets API documentation referenced in the report, in case libwebsockets.org is down:
-https://github.com/warmcat/libwebsockets/blob/main/READMEs/README.coding.md
+Meant to run for long periods of time on low-power devices, in this case a RaspberryPi Zero 2 W, while not falling short of the real-time constraints.
+As such, the focus is on both reliability (e.g. disruption to the network should not cause a fatal error but merely reconnection attempts) and efficiency (e.g. multithreading, prudent memory usage).
 
-To find what the reference is talking about, CTRL+F "single"
-
-
-Alternate link for the example code referenced in a comment in the rtes-okx.c file:
-
-https://github.com/warmcat/libwebsockets/blob/main/minimal-examples-lowlevel/ws-client/minimal-ws-client/minimal-ws-client.c
+Alternate links for the libwebsockets API documentation references, in case libwebsockets.org is down:
+-  Referenced in the report:  https://github.com/warmcat/libwebsockets/blob/main/READMEs/README.coding.md (to find what the reference is talking about, CTRL+F "single")
+-  Referenced in a code comment:  https://github.com/warmcat/libwebsockets/blob/main/minimal-examples-lowlevel/ws-client/minimal-ws-client/minimal-ws-client.c
