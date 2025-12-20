@@ -5,21 +5,29 @@
 #include <time.h>
 #include <signal.h>
 #include <unistd.h>
+#include <limits.h>
 #include <pthread.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <libwebsockets.h>
 #include <jansson.h>
 
-#define QUEUESIZE 16384     // Size of the FIFO queue used for the incoming WebSocket data
-#define METRICS 3           // Number of metrics we'll be recording (raw trade data, moving average values, Pearson correlation coefficient values), each corresponding to a file
-#define SUBSCRIPTIONS 8     // Number of instruments we'll be tracking
-#define SUBSIZE 10          // Maximum string size of the instrument IDs we'll be subscribing to
-#define INTERVAL 60         // Time interval for the "everyInterval" thread, in seconds
-#define INTERVALS 15        // Number of intervals over which certain metrics are calculated
-#define DATAPOINTS 8        // Number of datapoints kept for Pearson correlation coefficient calculations
 #define EXTENSION ".txt"    // File extension for the files that will save the data
-#define MAX_LINE 128        // Buffer size for reading moving-average-file lines
+
+enum {
+    UNDEFINED = -1,     // Used to mark non-existent pearson correlation coefficient
+    TRADE,              // File index for the raw trade data
+    MOVAVG,             // File index for the moving average and size data
+    PEARSON,            // File index for the pearson correlation coefficient data
+    METRICS,            // Number of metrics we'll be recording (raw trade data, moving average values, Pearson correlation coefficient values), each corresponding to a file
+    SUBSCRIPTIONS = 8,  // Number of instruments we'll be tracking
+    SUBSIZE = 10,       // Maximum string size of the instrument IDs we'll be subscribing to
+    INTERVAL = 60,      // Time interval for the "everyInterval" thread, in seconds
+    INTERVALS = 15,     // Number of intervals over which certain metrics are calculated
+    DATAPOINTS = 8,     // Number of datapoints kept for Pearson correlation coefficient calculations
+    QUEUESIZE = 16384,  // Size of the FIFO queue used for the incoming WebSocket data
+    MAX_LINE = 128      // Buffer size for reading moving-average-file lines
+};
 
 // Struct for the incoming trade data from OKX
 typedef struct {
@@ -85,13 +93,17 @@ typedef struct {
     pthread_cond_t finishUp;
 } intervalData;
 
+static int strtoi(const char* s);
 static unsigned long long unixTimeInMs();
+
 static double pearsonCorrCoeff(int n, double X[n], double Y[n]);
+static pearsonCorr checkPearsonMax(pearsonCorr pearson, pearsonCorr maxPearson, int *bestIndicator, int currentInstrument);
 
 static void databaseInit(database *db, const char* const subsArr[SUBSCRIPTIONS]);
 static void databaseDelete(database *db);
 static void connect_client(lws_sorted_usec_list_t *sul);
 
+static int killThread(pthread_t threadToJoin, pthread_mutex_t *mut, pthread_cond_t *cond, int *flag, const char* threadName);
 static void *producer(void *args);
 static void *consumer(void *args);
 static void *everyInterval(void *args);
@@ -107,7 +119,7 @@ static int callback_okx(struct lws *wsi, enum lws_callback_reasons reason, void 
         // When the connection is first established, fill a list of instruments to subscribe to and schedule a write-to-server event
         case LWS_CALLBACK_CLIENT_ESTABLISHED: {
             printf("\nWebSocket connection established\n");
-            producerData *proDat = lws_context_user(lws_get_context(wsi)); // retrieve certain defined data from the LWS context; explained later
+            producerData *proDat = lws_context_user(lws_get_context(wsi)); // retrieve producer data from the LWS context; attached during initialization in main
             proDat->subCount = 0;
             for (int i = 0; i < SUBSCRIPTIONS; ++i) {
                 strncpy(proDat->subList[i], proDat->subscriptions[i], SUBSIZE);
@@ -224,7 +236,7 @@ static int callback_okx(struct lws *wsi, enum lws_callback_reasons reason, void 
                             trade currentTrade;
 
                             currentTrade.subIndex = i; // mark which instrument this trade belongs to using the "subscriptions" array index that was found
-                            currentTrade.count = strtod((const char *)json_string_value(cnt_obj), NULL);
+                            currentTrade.count = strtoi((const char *)json_string_value(cnt_obj));
                             currentTrade.price = strtod((const char *)json_string_value(px_obj), NULL);
                             currentTrade.size = strtod((const char *)json_string_value(sz_obj), NULL);
                             currentTrade.timestamp = strtoull((const char *)json_string_value(ts_obj), NULL, 10);
@@ -286,6 +298,7 @@ static int callback_okx(struct lws *wsi, enum lws_callback_reasons reason, void 
 }
 
 int main() {
+    int exitCode = 0;
 /*  The program is designed to run until manually terminated. As such, we want to handle SIGINT and SIGTERM ourselves,
     and perform cleanup before exiting. This is achieved via signal masking. "Harsher" signals like SIGQUIT are left
     unhandled as there should be a way to end the program on the spot, if desired. */
@@ -351,11 +364,8 @@ int main() {
 
     if (!context) {
         fprintf(stderr, "lws_init failed\n");
-        pthread_cond_destroy(&intDat.finishUp);
-        pthread_condattr_destroy(&monotonic);
-        databaseDelete(&conDat.DB);
-        queueDelete(&conDat.fifo);
-        return 1;
+        exitCode = 1;
+        goto EARLY_CLEANUP;
     }
 
     // Set up connection parameters
@@ -385,9 +395,13 @@ int main() {
 
     // Create threads
     pthread_t pro, con, perInt;
-    pthread_create(&pro, NULL, producer, context);
-    pthread_create(&perInt, NULL, everyInterval, &intDat);
-    pthread_create(&con, NULL, consumer, &conDat);
+    if (pthread_create(&pro, NULL, producer, context) != 0 ||
+        pthread_create(&con, NULL, consumer, &conDat) != 0 ||
+        pthread_create(&perInt, NULL, everyInterval, &intDat) != 0) {
+        perror("pthread_create() error");
+        exitCode = 2;
+        goto CLEANUP;
+    }
 
     // Restore signal mask
     pthread_sigmask(SIG_SETMASK, &terminationMask, NULL);
@@ -398,40 +412,22 @@ int main() {
         sigwait(&terminationMask, &sig);
     }
 
-    printf("\nCaught SIGINT, shutting down..\n");
+    printf("\nCaught signal %d, shutting down..\n", sig);
 
     // Restore original signal mask. This way, if the program hangs, SIGINT/SIGTERM can be raised again to interrupt it in the normal way.
     pthread_sigmask(SIG_SETMASK, &originalMask, NULL);
 
-    // Shutdown producer thread
-    pthread_mutex_lock(&conDat.fifo.mut);
-    proDat.interrupted = 1;
-    pthread_cond_signal(&conDat.fifo.notFull);
-    pthread_mutex_unlock(&conDat.fifo.mut);
+    // Shutdown the threads one by one
+    if (killThread(pro, &conDat.fifo.mut, &conDat.fifo.notFull, &proDat.interrupted, "producer") != 0 ||
+        killThread(con, &conDat.fifo.mut, &conDat.fifo.notEmpty, &conDat.consumerFlag, "consumer") != 0 ||
+        killThread(perInt, &conDat.DB.mut, &intDat.finishUp, &intDat.finish, "per-interval") != 0) {
+        exitCode = 3;
+    }
 
-    pthread_join(pro, NULL);
-    printf("Joined producer thread.\n");
-
-    // Shutdown consumer thread
-    pthread_mutex_lock(&conDat.fifo.mut);
-    conDat.consumerFlag = 1;
-    pthread_cond_signal(&conDat.fifo.notEmpty);
-    pthread_mutex_unlock(&conDat.fifo.mut);
-
-    pthread_join(con, NULL);
-    printf("Joined consumer thread.\n");
-
-    // Shutdown per-interval thread
-    pthread_mutex_lock(&conDat.DB.mut);
-    intDat.finish = 1;
-    pthread_cond_signal(&intDat.finishUp);
-    pthread_mutex_unlock(&conDat.DB.mut);
-
-    pthread_join(perInt, NULL);
-    printf("Joined per-interval thread.\n");
-
-    // Cleanup
+    CLEANUP:
     lws_context_destroy(context);
+
+    EARLY_CLEANUP:
     pthread_cond_destroy(&intDat.finishUp);
     pthread_condattr_destroy(&monotonic);
     databaseDelete(&conDat.DB);
@@ -439,13 +435,20 @@ int main() {
 
     printf("Cleaned up.\n");
 
-    return 0;
+    return exitCode;
+}
+
+static int strtoi(const char* s) {
+    long x = strtol(s, NULL, 10);
+    if (x < INT_MIN || x > INT_MAX) {
+        return 0;
+    }
+    return (int)x;
 }
 
 static unsigned long long unixTimeInMs() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-
     return (unsigned long long)(ts.tv_sec) * 1000 + (unsigned long long)(ts.tv_nsec) / 1000000;
 }
 
@@ -474,13 +477,17 @@ static double pearsonCorrCoeff(int n, double X[n], double Y[n]) {
         if (stdDevX == 0 || stdDevY == 0) {
             return NAN;
         }
-        else {
-            return covXY / sqrt(stdDevX*stdDevY);
-        }
+        return covXY / sqrt(stdDevX*stdDevY);
     }
-    else {
-        return NAN;
+    return NAN;
+}
+
+static pearsonCorr checkPearsonMax(pearsonCorr pearson, pearsonCorr maxPearson, int *bestIndicator, int currentInstrument) {
+    if (!isnan(pearson.coeff) && fabs(maxPearson.coeff) < fabs(pearson.coeff)) {
+        *bestIndicator = currentInstrument;
+        return pearson;
     }
+    return maxPearson;
 }
 
 static void databaseInit(database *db, const char* const subsArr[SUBSCRIPTIONS]) {
@@ -510,7 +517,7 @@ static void databaseInit(database *db, const char* const subsArr[SUBSCRIPTIONS])
         for (j = 0; j < SUBSCRIPTIONS; ++j) {
             char fileSpec[strlen(filepaths[i]) + strlen(subsArr[j]) + strlen(EXTENSION) + 1];
             snprintf(fileSpec, sizeof(fileSpec), "%s%s%s", filepaths[i], subsArr[j], EXTENSION);
-            if (k == 1) {
+            if (k == MOVAVG) {
                 db->files[k][j] = fopen(fileSpec, "w+"); // moving average files will also need to be read
             }
             else {
@@ -538,6 +545,20 @@ static void connect_client(lws_sorted_usec_list_t *sul) {
     if (!lws_client_connect_via_info(&ccDat->ccinfo)) {
         lws_retry_sul_schedule(ccDat->ccinfo.context, 0, sul, &ccDat->retry, connect_client, &ccDat->retry_count);
     }
+}
+
+static int killThread(pthread_t threadToJoin, pthread_mutex_t *mut, pthread_cond_t *cond, int *flag, const char* threadName) {
+    pthread_mutex_lock(mut);
+    *flag = 1;
+    pthread_cond_signal(cond);
+    pthread_mutex_unlock(mut);
+
+    if (pthread_join(threadToJoin, NULL) != 0) {
+        perror("pthread_join() error");
+        return 1;
+    }
+    printf("Joined %s thread.\n", threadName);
+    return 0;
 }
 
 // The producer thread handles the WebSocket events
@@ -579,7 +600,7 @@ static void *consumer (void *args) {
         pthread_mutex_unlock(&conDat->DB.mut);
 
         // No other thread writes to the raw trade data files, so no need to hold on to the mutex while writing to them
-        fprintf(conDat->DB.files[0][t.subIndex], "%lf,%lf,%llu,%llu,%llu\n", t.price, t.size, t.timestamp, t.timeReceived, unixTimeInMs());
+        fprintf(conDat->DB.files[TRADE][t.subIndex], "%lf,%lf,%llu,%llu,%llu\n", t.price, t.size, t.timestamp, t.timeReceived, unixTimeInMs());
     }
     return NULL;
 }
@@ -663,8 +684,8 @@ static void *everyInterval (void *args) {
                     priceAvg[i][minuteCount] = NAN;
                 }
                 // No other thread ever accesses these files so no need to protect access with a mutex
-                fseek(intDat->DB->files[1][i], 0, SEEK_END); // make sure to write at the end of the file
-                fprintf(intDat->DB->files[1][i], "%lf,%lf,%llu\n", priceAvg[i][minuteCount], sizeTotal, unixTimeInMs());
+                fseek(intDat->DB->files[MOVAVG][i], 0, SEEK_END); // make sure to write at the end of the file
+                fprintf(intDat->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][minuteCount], sizeTotal, unixTimeInMs());
             }
             /* After the first <DATAPOINTS> minutes, every element of the vector is first shifted one spot towards the "head", while the "head" is
                discarded. The newest entry is added to the "tail". This is necessary to make sure the vector is always aligned oldest-to-newest,
@@ -678,8 +699,8 @@ static void *everyInterval (void *args) {
                     priceAvg[i][DATAPOINTS-1] = NAN;
                 }
                 // No other thread ever accesses these files so no need to protect access with a mutex
-                fseek(intDat->DB->files[1][i], 0, SEEK_END); // make sure to write at the end of the file
-                fprintf(intDat->DB->files[1][i], "%lf,%lf,%llu\n", priceAvg[i][DATAPOINTS-1], sizeTotal, unixTimeInMs());
+                fseek(intDat->DB->files[MOVAVG][i], 0, SEEK_END); // make sure to write at the end of the file
+                fprintf(intDat->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][DATAPOINTS-1], sizeTotal, unixTimeInMs());
             }
         }
         ++minuteCount;
@@ -689,72 +710,57 @@ static void *everyInterval (void *args) {
            in order. The largest coefficient found is then saved as this interval's coefficient: its value, how far back in time it was found,
            and the instrument it was found with. */
         for (i = 0; i < SUBSCRIPTIONS; ++i) {
-            bestIndicator = -1;
+            bestIndicator = UNDEFINED;
             maxPearson.coeff = 0;
-            maxPearson.corrTime = -1;
+            maxPearson.corrTime = UNDEFINED;
             for (j = 0; j < SUBSCRIPTIONS; ++j) {
-                fseek(intDat->DB->files[1][j], 0, SEEK_SET); // go to the start of the moving average file
-                fgets(line, MAX_LINE, intDat->DB->files[1][j]); // skip the headers
+                fseek(intDat->DB->files[MOVAVG][j], 0, SEEK_SET); // go to the start of the moving average file
+                if (!fgets(line, MAX_LINE, intDat->DB->files[MOVAVG][j])) { // skip the headers
+                    continue;
+                }
 
                 // Get the first <DATAPOINTS> moving averages of the file. This is the first vector to compute the coefficient with.
                 // If <DATAPOINTS> minutes have not passed yet, compute it with whatever values there are.
-                for (k = 0; k < DATAPOINTS && fgets(line, MAX_LINE, intDat->DB->files[1][j]) != NULL; ++k) {
+                for (k = 0; k < DATAPOINTS && fgets(line, MAX_LINE, intDat->DB->files[MOVAVG][j]) != NULL; ++k) {
                     sscanf(line,"%lf,%*f,%llu\n", &avgVec[k], &pearson.corrTime);
                 }
                 pearson.coeff = pearsonCorrCoeff(DATAPOINTS, priceAvg[i], avgVec);
-
                 // Check if the computed coefficient is the maximum so far and note down its details if it is.
-                if (!isnan(pearson.coeff) && fabs(maxPearson.coeff) < fabs(pearson.coeff)) {
-                    bestIndicator = j;
-                    maxPearson.coeff = pearson.coeff;
-                    maxPearson.corrTime = pearson.corrTime;
-                }
+                maxPearson = checkPearsonMax(pearson, maxPearson, &bestIndicator, j);
 
                 // Next, move down the file line-by-line and compute the new coefficient each time. Stop at <DATAPOINTS> lines before the end of the file
-                for ( ; k < minuteCount-DATAPOINTS; ++k) {
-                    fgets(line, MAX_LINE, intDat->DB->files[1][j]);
+                for ( ; k < minuteCount-DATAPOINTS && fgets(line, MAX_LINE, intDat->DB->files[MOVAVG][j]) != NULL; ++k) {
                     memmove(&avgVec[0], &avgVec[1], (DATAPOINTS-1) * sizeof(avgVec[0])); // again, for alignment purposes
                     sscanf(line,"%lf,%*f,%llu\n", &avgVec[DATAPOINTS-1], &pearson.corrTime);
 
                     pearson.coeff = pearsonCorrCoeff(DATAPOINTS, priceAvg[i], avgVec);
-
                     // Don't forget to check if it's the maximum so far, each time
-                    if (!isnan(pearson.coeff) && fabs(maxPearson.coeff) < fabs(pearson.coeff)) {
-                        bestIndicator = j;
-                        maxPearson.coeff = pearson.coeff;
-                        maxPearson.corrTime = pearson.corrTime;
-                    }
+                    maxPearson = checkPearsonMax(pearson, maxPearson, &bestIndicator, j);
                 }
                 // The final <DATAPOINTS> lines are only taken into consideration if the current instrument is not being compared to its own past
                 if (i != j) {
-                    for ( ; k < minuteCount; ++k) {
-                        fgets(line, MAX_LINE, intDat->DB->files[1][j]);
+                    for ( ; k < minuteCount && fgets(line, MAX_LINE, intDat->DB->files[MOVAVG][j]) != NULL; ++k) {
                         memmove(&avgVec[0], &avgVec[1], (DATAPOINTS-1) * sizeof(avgVec[0]));
                         sscanf(line,"%lf,%*f,%llu\n", &avgVec[DATAPOINTS-1], &pearson.corrTime);
 
                         pearson.coeff = pearsonCorrCoeff(DATAPOINTS, priceAvg[i], avgVec);
-
-                        if (!isnan(pearson.coeff) && fabs(maxPearson.coeff) < fabs(pearson.coeff)) {
-                            bestIndicator = j;
-                            maxPearson.coeff = pearson.coeff;
-                            maxPearson.corrTime = pearson.corrTime;
-                        }
+                        maxPearson = checkPearsonMax(pearson, maxPearson, &bestIndicator, j);
                     }
                 }
             }
 
             // Save coefficients to their respective files; again, no need for a mutex here
-            if (bestIndicator != -1) {
-                fprintf(intDat->DB->files[2][i], "%s,%lf,%llu,%llu\n", (*intDat->subs)[bestIndicator],
-                                                                        maxPearson.coeff,
-                                                                        maxPearson.corrTime,
-                                                                        unixTimeInMs());
+            if (bestIndicator != UNDEFINED) {
+                fprintf(intDat->DB->files[PEARSON][i], "%s,%lf,%llu,%llu\n", (*intDat->subs)[bestIndicator],
+                                                                              maxPearson.coeff,
+                                                                              maxPearson.corrTime,
+                                                                              unixTimeInMs());
             }
             else {
-                fprintf(intDat->DB->files[2][i], "%lf,%lf,%lf,%llu\n", NAN,
-                                                                       NAN,
-                                                                       NAN,
-                                                                       unixTimeInMs());
+                fprintf(intDat->DB->files[PEARSON][i], "%lf,%lf,%lf,%llu\n", NAN,
+                                                                             NAN,
+                                                                             NAN,
+                                                                             unixTimeInMs());
             }
         }
         // A kind of simplified "circular buffer"
