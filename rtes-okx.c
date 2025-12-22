@@ -17,24 +17,24 @@
 #define UNUSED(x) (void)(x)
 
 enum {
-    UNDEFINED = -1,     // Used as a marker in instances of non-existent Pearson correlation coefficient entries
-    TRADE,              // File index for the raw trade data
-    MOVAVG,             // File index for the moving average and size data
-    PEARSON,            // File index for the Pearson correlation coefficient data
-    METRICS,            // Number of metrics we'll be recording (raw trade data, moving average values, Pearson correlation coefficient values), each corresponding to a file
-    SUBSCRIPTIONS = 8,  // Number of instruments we'll be tracking
-    SUBSIZE = 10,       // Maximum string size of the instrument IDs we'll be subscribing to
-    INTERVAL = 60,      // Time interval for the "perInterval" thread, in seconds
-    INTERVALS = 15,     // Number of intervals over which certain metrics are calculated
-    DATAPOINTS = 8,     // Number of datapoints kept for Pearson correlation coefficient calculations
-    MAX_LINE = 128,     // Buffer size for reading moving-average-file lines
-    QUEUESIZE = 16384,  // Size of the FIFO queue used for the incoming WebSocket data
-    CALLBACK_SUCCESS = 0,   // callbackOKX returns this if all went ok
-    JSON_LOADS_ERROR,   // callbackOKX returns this if json_loads() fails
-    OKX_ERROR,          // callbackOKX returns this if the data sent from OKX reads "error"
-    THREADS,            // Number of threads excluding the main thread
-    FALSE = 0,          // For terminationFlags
-    TRUE                // For terminationFlags
+    UNDEFINED = -1,         // Used as a marker in instances of non-existent Pearson correlation coefficient entries
+    TRADE,                  // File index for the raw trade data
+    MOVAVG,                 // File index for the moving average and size data
+    PEARSON,                // File index for the Pearson correlation coefficient data
+    METRICS,                // Number of metrics we'll be recording (raw trade data, moving average values, Pearson correlation coefficient values), each corresponding to a file
+    SUBSCRIPTIONS = 8,      // Number of instruments we'll be tracking
+    SUBSIZE = 10,           // Maximum string size of the instrument IDs we'll be subscribing to
+    INTERVAL = 60,          // Time interval for the "perInterval" thread, in seconds
+    INTERVALS = 15,         // Number of intervals over which certain metrics are calculated
+    DATAPOINTS = 8,         // Number of datapoints kept for Pearson correlation coefficient calculations
+    MAX_LINE = 128,         // Buffer size for reading moving-average-file lines
+    QUEUESIZE = 16384,      // Size of the FIFO queue used for the incoming WebSocket data
+    CALLBACK_SUCCESS = 0,   // callbackOKX() returns this if all went ok
+    JSON_LOADS_ERROR,       // callbackOKX() returns this if json_loads() fails
+    OKX_ERROR,              // callbackOKX() returns this if the data sent from OKX reads "error"
+    THREADS,                // Number of threads excluding the main thread
+    FALSE = 0,              // For terminationFlags
+    TRUE                    // For terminationFlags
 };
 
 // Struct for the incoming trade data from OKX
@@ -139,9 +139,7 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
             printf("\nWebSocket connection established\n");
             producer_data *producerData = lws_context_user(lws_get_context(wsi)); // retrieve producer data from the LWS context; attached during initialization in main
             producerData->subCount = 0;
-            for (int i = 0; i < SUBSCRIPTIONS; ++i) {
-                memcpy(producerData->subList[i], producerData->subscriptions[i], SUBSIZE);
-            }
+            memcpy(producerData->subList, producerData->subscriptions, sizeof(producerData->subscriptions));
             lws_callback_on_writable(wsi);
             return CALLBACK_SUCCESS;
         }
@@ -393,7 +391,7 @@ int main() {
 
     // Create the libwebsockets context
     struct lws_context_creation_info info;
-    memset(&info, 0, sizeof info);
+    memset(&info, 0, sizeof(info));
 
     info.port = CONTEXT_PORT_NO_LISTEN;
     info.protocols = protocols;
