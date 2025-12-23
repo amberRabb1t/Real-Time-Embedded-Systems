@@ -483,7 +483,9 @@ int main() {
     pthread_sigmask(SIG_SETMASK, &originalMask, NULL);
 
     // Shutdown the threads one by one
-    for (n = 0; n < THREADS; ++n) {
+    n = THREADS;
+    CLEANUP:
+    while (n--) {
         pthread_mutex_lock(threadsInfo[n].mut);
         *threadsInfo[n].flag = TRUE;
         pthread_cond_signal(threadsInfo[n].cond);
@@ -498,7 +500,6 @@ int main() {
         }
     }
 
-    CLEANUP:
     lws_context_destroy(context);
 
     EARLY_CLEANUP:
