@@ -16,25 +16,39 @@
 
 #define UNUSED(x) (void)(x)
 
-enum {
+enum instrument_metrics {
     UNDEFINED = -1,         // Used as a marker in instances of non-existent Pearson correlation coefficient entries
     TRADE,                  // File index for the raw trade data
     MOVAVG,                 // File index for the moving average and size data
     PEARSON,                // File index for the Pearson correlation coefficient data
     METRICS,                // Number of metrics we'll be recording (raw trade data, moving average values, Pearson correlation coefficient values), each corresponding to a file
+    DATAPOINTS = 8          // Number of datapoints kept for Pearson correlation coefficient calculations
+};
+
+enum program_parameters {
+    THREADS = 3,            // Number of threads excluding the main thread
     SUBSCRIPTIONS = 8,      // Number of instruments we'll be tracking
     SUBSIZE = 10,           // Maximum string size of the instrument IDs we'll be subscribing to
     INTERVAL = 60,          // Time interval for the "perInterval" thread, in seconds
     INTERVALS = 15,         // Number of intervals over which certain metrics are calculated
-    DATAPOINTS = 8,         // Number of datapoints kept for Pearson correlation coefficient calculations
     MAX_LINE = 128,         // Buffer size for reading moving-average-file lines
-    QUEUESIZE = 16384,      // Size of the FIFO queue used for the incoming WebSocket data
+    QUEUESIZE = 16384       // Size of the FIFO queue used for the incoming WebSocket data
+};
+
+enum status_codes {
+    FALSE,                  // For terminationFlags
+    TRUE,                   // For terminationFlags
     CALLBACK_SUCCESS = 0,   // callbackOKX() returns this if all went ok
     JSON_LOADS_ERROR,       // callbackOKX() returns this if json_loads() fails
-    OKX_ERROR,              // callbackOKX() returns this if the data sent from OKX reads "error"
-    THREADS,                // Number of threads excluding the main thread
-    FALSE = 0,              // For terminationFlags
-    TRUE                    // For terminationFlags
+    OKX_ERROR               // callbackOKX() returns this if the data sent from OKX reads "error"
+};
+
+enum db_status {            // databaseInit() returns this if:
+    DATABASE_SUCCESS,       // all went ok
+    MKDIR_ERROR,            // mkdir() failed
+    SNPRINTF_ERROR,         // snprintf() failed
+    FOPEN_ERROR,            // fopen() failed
+    FPRINTF_ERROR           // fprintf() failed
 };
 
 // Struct for the incoming trade data from OKX
@@ -118,7 +132,7 @@ static unsigned long long unixTimeInMs();
 static double pearsonCorrCoeff(int n, double X[n], double Y[n]);
 static int checkPearsonMax(pearson_corr pearson, pearson_corr *maxPearson, int currentBestIndicator, int instrumentBeingChecked);
 
-static void databaseInit(database *db, const char subsArray[SUBSCRIPTIONS][SUBSIZE]);
+static enum db_status databaseInit(database *db, const char subsArray[SUBSCRIPTIONS][SUBSIZE]);
 static void databaseDelete(database *db);
 static void connectClient(lws_sorted_usec_list_t *sul);
 
@@ -151,8 +165,8 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
                 char subSpec[sizeof("{\"op\":\"subscribe\",\"args\": [{\"channel\": \"trades\",\"instId\": \"\"}]}") +
                              strlen(producerData->subList[producerData->subCount])];
 
-                snprintf(subSpec, sizeof(subSpec), "{\"op\":\"subscribe\",\"args\": [{\"channel\": \"trades\",\"instId\": \"%s\"}]}",
-                         producerData->subList[producerData->subCount]);
+                while (snprintf(subSpec, sizeof(subSpec), "{\"op\":\"subscribe\",\"args\": [{\"channel\": \"trades\",\"instId\": \"%s\"}]}",
+                         producerData->subList[producerData->subCount]) < 0);
 
                 unsigned char buf[LWS_SEND_BUFFER_PRE_PADDING + sizeof(subSpec) + LWS_SEND_BUFFER_POST_PADDING];
                 memset(buf, 0, sizeof(buf));
@@ -329,10 +343,22 @@ int main() {
     and perform cleanup before exiting. This is achieved via signal masking. "Harsher" signals like SIGQUIT are left
     unhandled as there should be a way to end the program on the spot, if desired. */
     sigset_t terminationMask, originalMask, allSignals;
-    sigemptyset(&terminationMask);
-    sigaddset(&terminationMask, SIGINT);
-    sigaddset(&terminationMask, SIGTERM);
-    pthread_sigmask(SIG_BLOCK, &terminationMask, &originalMask);
+    if (sigemptyset(&terminationMask) != 0) {
+        fprintf(stderr, "sigemptyset() error\n");
+        return EXIT_FAILURE;
+    }
+    if (sigaddset(&terminationMask, SIGINT) != 0) {
+        fprintf(stderr, "sigaddset() error (SIGINT)\n");
+        return EXIT_FAILURE;
+    }
+    if (sigaddset(&terminationMask, SIGTERM) != 0) {
+        fprintf(stderr, "sigaddset() error (SIGTERM)\n");
+        return EXIT_FAILURE;
+    }
+    if (pthread_sigmask(SIG_BLOCK, &terminationMask, &originalMask) != 0) {
+        fprintf(stderr, "pthread_sigmask() error (SIG_BLOCK)\n");
+        return EXIT_FAILURE;
+    }
 
     // One by one, initialize the threads' working data
 
@@ -353,7 +379,10 @@ int main() {
         .clientConnectData.retry.jitter_percent = 20
     };
 
-    databaseInit(&consumerData.DB, producerData.subscriptions);
+    if (databaseInit(&consumerData.DB, producerData.subscriptions) != DATABASE_SUCCESS) {
+        exitCode = EXIT_FAILURE;
+        goto QUEUE_CLEANUP;
+    }
 
     per_interval_data perIntervalData = {
         .DB = &consumerData.DB,
@@ -363,7 +392,11 @@ int main() {
     // The monotonic clock is independent of network time and as such, ideal for the internal timing of the "perInterval" thread
     pthread_condattr_t monotonic;
     pthread_condattr_init(&monotonic);
-    pthread_condattr_setclock(&monotonic, CLOCK_MONOTONIC);
+    if (pthread_condattr_setclock(&monotonic, CLOCK_MONOTONIC) != 0) {
+        fprintf(stderr, "pthread_condattr_setclock() error\n");
+        exitCode = EXIT_FAILURE;
+        goto EARLY_CLEANUP;
+    }
     pthread_cond_init(&perIntervalData.termination, &monotonic);
 
     // Libwebsockets connection initialization process
@@ -403,7 +436,7 @@ int main() {
     if (!context) {
         fprintf(stderr, "lws_init failed\n");
         exitCode = EXIT_FAILURE;
-        goto EARLY_CLEANUP;
+        goto LWS_FAIL_CLEANUP;
     }
 
     // Set up connection parameters
@@ -428,8 +461,16 @@ int main() {
     we temporarily set a signal mask that blocks all signals,
     only to then restore the previous one after all threads have been created.
     This way no thread except 'main' will respond to signals. */
-    sigfillset(&allSignals);
-    pthread_sigmask(SIG_SETMASK, &allSignals, &terminationMask);
+    if (sigfillset(&allSignals) != 0) {
+        fprintf(stderr, "sigfillset() error\n");
+        exitCode = EXIT_FAILURE;
+        goto CLEANUP;
+    }
+    if (pthread_sigmask(SIG_SETMASK, &allSignals, &terminationMask) != 0) {
+        fprintf(stderr, "pthread_sigmask() error (allSignals)\n");
+        exitCode = EXIT_FAILURE;
+        goto CLEANUP;
+    }
 
     // Create threads
     thread_info threadsInfo[THREADS] = {
@@ -461,30 +502,36 @@ int main() {
 
     int n;
     for (n = 0; n < THREADS; ++n) {
-        if (pthread_create(&threadsInfo[n].id, NULL, threadsInfo[n].func, threadsInfo[n].args) != 0){
+        if (pthread_create(&threadsInfo[n].id, NULL, threadsInfo[n].func, threadsInfo[n].args) != 0) {
             fprintf(stderr, "pthread_create() error: failed to create %s thread\n", threadsInfo[n].name);
             exitCode = EXIT_FAILURE;
-            goto CLEANUP;
+            goto THREAD_CLEANUP;
         }
     }
 
     // Restore signal mask
-    pthread_sigmask(SIG_SETMASK, &terminationMask, NULL);
+    if (pthread_sigmask(SIG_SETMASK, &terminationMask, NULL) != 0) {
+        fprintf(stderr, "pthread_sigmask() error: failed to restore terminationMask\n");
+        exitCode = EXIT_FAILURE;
+        goto THREAD_CLEANUP;
+    }
 
     // Wait for program shutdown signal
     n = 0;
     while (n != SIGINT && n != SIGTERM) {
         sigwait(&terminationMask, &n);
     }
-
     printf("\nCaught \"%s\" signal, shutting down..\n", strsignal(n));
 
+    n = THREADS;
+    THREAD_CLEANUP:
     // Restore original signal mask. This way, if the program hangs, SIGINT/SIGTERM can be raised again to interrupt it in the normal way.
-    pthread_sigmask(SIG_SETMASK, &originalMask, NULL);
+    if (pthread_sigmask(SIG_SETMASK, &originalMask, NULL) != 0) {
+        fprintf(stderr, "pthread_sigmask() error: failed to restore original signal mask\n");
+        exitCode = EXIT_FAILURE;
+    }
 
     // Shutdown the threads one by one
-    n = THREADS;
-    CLEANUP:
     while (n--) {
         pthread_mutex_lock(threadsInfo[n].mut);
         *threadsInfo[n].flag = TRUE;
@@ -500,12 +547,19 @@ int main() {
         }
     }
 
+    CLEANUP:
     lws_context_destroy(context);
 
+    LWS_FAIL_CLEANUP:
+    if (pthread_cond_destroy(&perIntervalData.termination) != 0) {
+        fprintf(stderr, "pthread_cond_destroy() error: failed to destroy termination condition\n");
+    }
+
     EARLY_CLEANUP:
-    pthread_cond_destroy(&perIntervalData.termination);
     pthread_condattr_destroy(&monotonic);
     databaseDelete(&consumerData.DB);
+
+    QUEUE_CLEANUP:
     queueDelete(&consumerData.fifo);
 
     printf("Cleaned up.\n");
@@ -567,9 +621,7 @@ static int checkPearsonMax(pearson_corr pearson, pearson_corr *maxPearson, int c
     return currentBestIndicator;
 }
 
-static void databaseInit(database *db, const char subsArray[SUBSCRIPTIONS][SUBSIZE]) {
-    pthread_mutex_init(&db->mut, NULL);
-
+static enum db_status databaseInit(database *db, const char subsArray[SUBSCRIPTIONS][SUBSIZE]) {
     int i, j, k;
     for (i = 0; i < SUBSCRIPTIONS; ++i) {
         db->sumPrices[i] = 0;
@@ -587,7 +639,10 @@ static void databaseInit(database *db, const char subsArray[SUBSCRIPTIONS][SUBSI
     struct stat st = {0};
     for (i = 0; i < METRICS+1; ++i) {
         if (stat(filepaths[i], &st) == -1) {
-            mkdir(filepaths[i], 0777);
+            if (mkdir(filepaths[i], 0777) != 0) {
+                fprintf(stderr, "mkdir() error\n");
+                return MKDIR_ERROR;
+            }
         }
     }
 
@@ -595,25 +650,43 @@ static void databaseInit(database *db, const char subsArray[SUBSCRIPTIONS][SUBSI
         k = i-1; // compensating for the fact that there is an extra file path, due to the need for a parent directory "generated-files/"
         for (j = 0; j < SUBSCRIPTIONS; ++j) {
             char fileSpec[strlen(filepaths[i]) + strlen(subsArray[j]) + sizeof(extension)];
-            snprintf(fileSpec, sizeof(fileSpec), "%s%s%s", filepaths[i], subsArray[j], extension);
+            if (snprintf(fileSpec, sizeof(fileSpec), "%s%s%s", filepaths[i], subsArray[j], extension) < 0) {
+                fprintf(stderr, "snprintf() error: failed to print into fileSpec buffer\n");
+                return SNPRINTF_ERROR;
+            }
             if (k == MOVAVG) {
                 db->files[k][j] = fopen(fileSpec, "w+"); // moving average files will also need to be read
             }
             else {
                 db->files[k][j] = fopen(fileSpec, "w");
             }
-            fprintf(db->files[k][j], "%s\n", headers[k]);
+            if (db->files[k][j] == NULL) {
+                fprintf(stderr, "fopen() error\n");
+                return FOPEN_ERROR;
+            }
+            if (fprintf(db->files[k][j], "%s\n", headers[k]) < 0) {
+                fprintf(stderr, "fprintf() error: failed to print headers\n");
+                return FPRINTF_ERROR;
+            }
         }
     }
+    pthread_mutex_init(&db->mut, NULL);
+
+    return DATABASE_SUCCESS;
 }
 
 static void databaseDelete(database *db) {
-    for (int i = 0; i < METRICS; ++i) {
-        for (int j = 0; j < SUBSCRIPTIONS; ++j) {
-            fclose(db->files[i][j]);
+    int i, j;
+    for (i = 0; i < METRICS; ++i) {
+        for (j = 0; j < SUBSCRIPTIONS; ++j) {
+            if (fclose(db->files[i][j]) != 0) {
+                fprintf(stderr, "fclose() error\n");
+            }
         }
     }
-    pthread_mutex_destroy(&db->mut);
+    if (pthread_mutex_destroy(&db->mut) != 0) {
+        fprintf(stderr,"pthread_mutex_destroy() error: failed to destroy database mutex\n");
+    }
 }
 
 // This method of establishing a WebSocket connection is taken from the LibWebSockets API documentation
@@ -674,7 +747,7 @@ static void *consumer (void *args) {
 // The "perInterval" thread wakes once per defined interval to perform calculations on the collected data
 static void *perInterval (void *args) {
     struct timespec ts; // time struct that the thread will be looking at to see when it should wake up
-    clock_gettime(CLOCK_MONOTONIC, &ts); // monotonic is the better choice for internal timings due to independence from the network
+    while (clock_gettime(CLOCK_MONOTONIC, &ts) != 0); // monotonic is the better choice for internal timings due to independence from the network
     ts.tv_sec += INTERVAL; // this makes the time struct "point" one INTERVAL into the future
 
     per_interval_data *perIntervalData = args;
@@ -750,7 +823,6 @@ static void *perInterval (void *args) {
                     priceAvg[i][minuteCount] = NAN;
                 }
                 // No other thread ever accesses these files so no need to protect access with a mutex
-                fseek(perIntervalData->DB->files[MOVAVG][i], 0, SEEK_END); // make sure to write at the end of the file
                 fprintf(perIntervalData->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][minuteCount], sizeTotal, unixTimeInMs());
             }
             /* After the first <DATAPOINTS> minutes, every element of the vector is first shifted one spot towards the "head", while the "head" is
@@ -765,7 +837,6 @@ static void *perInterval (void *args) {
                     priceAvg[i][DATAPOINTS-1] = NAN;
                 }
                 // No other thread ever accesses these files so no need to protect access with a mutex
-                fseek(perIntervalData->DB->files[MOVAVG][i], 0, SEEK_END); // make sure to write at the end of the file
                 fprintf(perIntervalData->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][DATAPOINTS-1], sizeTotal, unixTimeInMs());
             }
         }
@@ -783,7 +854,7 @@ static void *perInterval (void *args) {
                 if (minuteCount < 2*DATAPOINTS && i == j) {
                     continue;
                 }
-                fseek(perIntervalData->DB->files[MOVAVG][j], 0, SEEK_SET); // go to the start of the moving average file
+                rewind(perIntervalData->DB->files[MOVAVG][j]); // go to the start of the moving average file
                 if (!fgets(line, MAX_LINE, perIntervalData->DB->files[MOVAVG][j])) { // skip the headers
                     continue;
                 }
@@ -808,7 +879,7 @@ static void *perInterval (void *args) {
                 }
                 // The final <DATAPOINTS> lines are only taken into consideration if the current instrument is not being compared to its own past
                 if (i != j) {
-                    for ( ; k < minuteCount && fgets(line, MAX_LINE, perIntervalData->DB->files[MOVAVG][j]) != NULL; ++k) {
+                    while (fgets(line, MAX_LINE, perIntervalData->DB->files[MOVAVG][j]) != NULL) {
                         memmove(&slidingAvgVector[0], &slidingAvgVector[1], (DATAPOINTS-1) * sizeof(slidingAvgVector[0]));
                         sscanf(line,"%lf,%*f,%llu\n", &slidingAvgVector[DATAPOINTS-1], &pearson.corrTime);
 
@@ -817,7 +888,6 @@ static void *perInterval (void *args) {
                     }
                 }
             }
-
             // Save coefficients to their respective files; again, no need for a mutex here
             if (bestIndicator != UNDEFINED) {
                 fprintf(perIntervalData->DB->files[PEARSON][i], "%s,%lf,%llu,%llu\n", (*perIntervalData->subs)[bestIndicator],
@@ -830,6 +900,11 @@ static void *perInterval (void *args) {
                                                                                       NAN,
                                                                                       NAN,
                                                                                       unixTimeInMs());
+            }
+        }
+        for (i = 0; i < SUBSCRIPTIONS; ++i) {
+            if (ferror(perIntervalData->DB->files[MOVAVG][i]) != 0) {
+                fseek(perIntervalData->DB->files[MOVAVG][i], 0, SEEK_END);
             }
         }
         // A kind of simplified "circular buffer"
@@ -851,9 +926,15 @@ static void queueInit(queue *q) {
 }
 
 static void queueDelete(queue *q) {
-    pthread_mutex_destroy(&q->mut);
-    pthread_cond_destroy(&q->notFull);
-    pthread_cond_destroy(&q->notEmpty);
+    if (pthread_mutex_destroy(&q->mut) != 0) {
+        fprintf(stderr, "pthread_mutex_destroy() error: failed to destroy queue mutex\n");
+    }
+    if (pthread_cond_destroy(&q->notFull) != 0) {
+        fprintf(stderr, "pthread_cond_destroy() error: failed to destroy notFull condition\n");
+    }
+    if (pthread_cond_destroy(&q->notEmpty) != 0) {
+        fprintf(stderr, "pthread_cond_destroy() error: failed to destroy notEmpty condition\n");
+    }
 }
 
 static void queueAdd(queue *q, trade in) {
