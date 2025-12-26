@@ -136,9 +136,9 @@ static enum db_status databaseInit(database *db, const char subsArray[SUBSCRIPTI
 static void databaseDelete(database *db);
 static void connectClient(lws_sorted_usec_list_t *sul);
 
-static void *producer(void *args);
-static void *consumer(void *args);
-static void *perInterval(void *args);
+static void *producer(void *lwsContextStruct);
+static void *consumer(void *consumerDataStruct);
+static void *perInterval(void *perIntervalDataStruct);
 
 static void queueInit(queue *q);
 static void queueDelete(queue *q);
@@ -258,8 +258,8 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
 
                     json_t *cnt_obj = json_object_get(metrics, "count"); // one message may aggregate multiple trades; this is how many were aggregated
                     json_t *px_obj = json_object_get(metrics, "px"); // trade price; if many trades were aggregated, this is the price of each one (it's the same for all of them, hence why they were grouped)
+                    json_t *sz_obj = json_object_get(metrics, "sz"); // trade size; if many trades were aggregated, this is the TOTAL size of ALL of them combined
                     json_t *ts_obj = json_object_get(metrics, "ts"); // UNIX timestamp of when the trade was completed, in milliseconds
-                    json_t *sz_obj = json_object_get(metrics, "sz"); // if many trades were aggregated, this is the TOTAL size of ALL of them combined
 
                     producer_data *producerData = lws_context_user(lws_get_context(wsi));
 
@@ -639,7 +639,7 @@ static enum db_status databaseInit(database *db, const char subsArray[SUBSCRIPTI
                                "generated-files/pearson-correlation-coefficients/"};
 
     struct stat st = {0};
-    for (i = 0; i < METRICS+1; ++i) {
+    for (i = 0; i <= METRICS; ++i) {
         if (stat(filepaths[i], &st) == -1) {
             if (mkdir(filepaths[i], 0777) != 0) {
                 fprintf(stderr, "mkdir() error\n");
@@ -719,8 +719,8 @@ static void connectClient(lws_sorted_usec_list_t *sul) {
 }
 
 // The producer thread handles the WebSocket events
-static void *producer (void *args) {
-    struct lws_context *context = args;
+static void *producer (void *lwsContextStruct) {
+    struct lws_context *context = lwsContextStruct;
     producer_data *producerData = lws_context_user(context);
 
     while (!producerData->terminationFlag) {
@@ -730,8 +730,8 @@ static void *producer (void *args) {
 }
 
 // The consumer thread takes the trade data in the queue and saves it
-static void *consumer (void *args) {
-    consumer_data *consumerData = args;
+static void *consumer (void *consumerDataStruct) {
+    consumer_data *consumerData = consumerDataStruct;
     trade t;
 
     while (!consumerData->terminationFlag) {
@@ -751,8 +751,8 @@ static void *consumer (void *args) {
 
         pthread_mutex_lock(&consumerData->DB.mut); // protect against conflict with perInterval thread
         // Add the trade's price/size to the interval's data and increment the interval's trades counter [for this instrument]
-        consumerData->DB.totalSize[t.subIndex] += t.size;
         consumerData->DB.sumPrices[t.subIndex] += t.price*t.count; // unlike the size data, the price data is not aggregated by default (in the case of multiple trades being aggregated in one message)
+        consumerData->DB.totalSize[t.subIndex] += t.size;
         consumerData->DB.numTrades[t.subIndex] += t.count;
         pthread_mutex_unlock(&consumerData->DB.mut);
 
@@ -763,20 +763,20 @@ static void *consumer (void *args) {
 }
 
 // The "perInterval" thread wakes once per defined interval to perform calculations on the collected data
-static void *perInterval (void *args) {
+static void *perInterval (void *perIntervalDataStruct) {
     struct timespec ts; // time struct that the thread will be looking at to see when it should wake up
     while (clock_gettime(CLOCK_MONOTONIC, &ts) != 0); // monotonic is the better choice for internal timings due to independence from the network
     ts.tv_sec += INTERVAL; // this makes the time struct "point" one INTERVAL into the future
 
-    per_interval_data *perIntervalData = args;
+    per_interval_data *perIntervalData = perIntervalDataStruct;
 
     pearson_corr pearson, maxPearson;
 
     // Declaration and initialization of variables relating to <INTERVALS>-window calculations
     double sumPrices[SUBSCRIPTIONS][INTERVALS], numTrades[SUBSCRIPTIONS][INTERVALS], totalSize[SUBSCRIPTIONS][INTERVALS],
-           priceSum, sizeTotal, priceAvg[SUBSCRIPTIONS][DATAPOINTS], slidingAvgVector[DATAPOINTS];
+           priceAccum, sizeAccum, priceAvg[SUBSCRIPTIONS][DATAPOINTS], slidingAvgVector[DATAPOINTS];
 
-    int i, j, k, tradesNum, bestIndicator, intervalCount = 0, minuteCount = 0;
+    int i, j, k, tradesAccum, bestIndicator, intervalCount = 0, minuteCount = 0;
     char line[MAX_LINE+1];
 
     for (i = 0; i < SUBSCRIPTIONS; ++i) {
@@ -811,8 +811,8 @@ static void *perInterval (void *args) {
         for (i = 0; i < SUBSCRIPTIONS; ++i) {
             // Fetch the data of the latest interval
             sumPrices[i][intervalCount] = perIntervalData->DB->sumPrices[i];
-            numTrades[i][intervalCount] = perIntervalData->DB->numTrades[i];
             totalSize[i][intervalCount] = perIntervalData->DB->totalSize[i];
+            numTrades[i][intervalCount] = perIntervalData->DB->numTrades[i];
             // Reset the arrays that it got fetched from, so that they record the next interval
             perIntervalData->DB->sumPrices[i] = 0;
             perIntervalData->DB->totalSize[i] = 0;
@@ -823,39 +823,39 @@ static void *perInterval (void *args) {
 
         // Calculation of simple moving average and total size for the latest <INTERVALS> window
         for (i = 0; i < SUBSCRIPTIONS; ++i) {
-            priceSum = 0;
-            tradesNum = 0;
-            sizeTotal = 0;
+            priceAccum = 0;
+            sizeAccum = 0;
+            tradesAccum = 0;
             for (j = 0; j < INTERVALS; ++j) {
-                priceSum += sumPrices[i][j];
-                tradesNum += numTrades[i][j];
-                sizeTotal += totalSize[i][j];
+                priceAccum += sumPrices[i][j];
+                sizeAccum += totalSize[i][j];
+                tradesAccum += numTrades[i][j];
             }
             /* Each instrument has a <DATAPOINTS>-long "average price" vector (updated every interval) stored for Pearson correlation coefficient
                calculations. For the first <DATAPOINTS> intervals (minutes), this vector is simply filled in order. */
             if (minuteCount < DATAPOINTS) {
-                if (tradesNum != 0) {
-                    priceAvg[i][minuteCount] = priceSum / tradesNum;
+                if (tradesAccum != 0) {
+                    priceAvg[i][minuteCount] = priceAccum / tradesAccum;
                 }
                 else {
                     priceAvg[i][minuteCount] = NAN;
                 }
                 // No other thread ever accesses these files so no need to protect access with a mutex
-                fprintf(perIntervalData->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][minuteCount], sizeTotal, unixTimeInMs());
+                fprintf(perIntervalData->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][minuteCount], sizeAccum, unixTimeInMs());
             }
             /* After the first <DATAPOINTS> minutes, every element of the vector is first shifted one spot towards the "head", while the "head" is
                discarded. The newest entry is added to the "tail". This is necessary to make sure the vector is always aligned oldest-to-newest,
                which is required for some edge cases (relating to potential NaN entries, which can happen if e.g. no data comes for an entire INTERVAL).*/
             else {
                 memmove(&priceAvg[i][0], &priceAvg[i][1], (DATAPOINTS-1) * sizeof(priceAvg[i][0]));
-                if (tradesNum != 0) {
-                    priceAvg[i][DATAPOINTS-1] = priceSum / tradesNum;
+                if (tradesAccum != 0) {
+                    priceAvg[i][DATAPOINTS-1] = priceAccum / tradesAccum;
                 }
                 else {
                     priceAvg[i][DATAPOINTS-1] = NAN;
                 }
                 // No other thread ever accesses these files so no need to protect access with a mutex
-                fprintf(perIntervalData->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][DATAPOINTS-1], sizeTotal, unixTimeInMs());
+                fprintf(perIntervalData->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][DATAPOINTS-1], sizeAccum, unixTimeInMs());
             }
         }
         ++minuteCount;
