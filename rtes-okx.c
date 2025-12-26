@@ -381,7 +381,7 @@ int main() {
 
     if (databaseInit(&consumerData.DB, producerData.subscriptions) != DATABASE_SUCCESS) {
         exitCode = EXIT_FAILURE;
-        goto QUEUE_CLEANUP;
+        goto out_db;
     }
 
     per_interval_data perIntervalData = {
@@ -395,7 +395,7 @@ int main() {
     if (pthread_condattr_setclock(&monotonic, CLOCK_MONOTONIC) != 0) {
         fprintf(stderr, "pthread_condattr_setclock() error\n");
         exitCode = EXIT_FAILURE;
-        goto EARLY_CLEANUP;
+        goto out_condattr;
     }
     pthread_cond_init(&perIntervalData.termination, &monotonic);
 
@@ -436,7 +436,7 @@ int main() {
     if (!context) {
         fprintf(stderr, "lws_init failed\n");
         exitCode = EXIT_FAILURE;
-        goto LWS_FAIL_CLEANUP;
+        goto out_lws;
     }
 
     // Set up connection parameters
@@ -464,12 +464,12 @@ int main() {
     if (sigfillset(&allSignals) != 0) {
         fprintf(stderr, "sigfillset() error\n");
         exitCode = EXIT_FAILURE;
-        goto CLEANUP;
+        goto out_sig;
     }
     if (pthread_sigmask(SIG_SETMASK, &allSignals, &terminationMask) != 0) {
         fprintf(stderr, "pthread_sigmask() error (allSignals)\n");
         exitCode = EXIT_FAILURE;
-        goto CLEANUP;
+        goto out_sig;
     }
 
     // Create threads
@@ -505,7 +505,7 @@ int main() {
         if (pthread_create(&threadsInfo[n].id, NULL, threadsInfo[n].func, threadsInfo[n].args) != 0) {
             fprintf(stderr, "pthread_create() error: failed to create %s thread\n", threadsInfo[n].name);
             exitCode = EXIT_FAILURE;
-            goto THREAD_CLEANUP;
+            goto out_full_cleanup;
         }
     }
 
@@ -513,7 +513,7 @@ int main() {
     if (pthread_sigmask(SIG_SETMASK, &terminationMask, NULL) != 0) {
         fprintf(stderr, "pthread_sigmask() error: failed to restore terminationMask\n");
         exitCode = EXIT_FAILURE;
-        goto THREAD_CLEANUP;
+        goto out_full_cleanup;
     }
 
     // Wait for program shutdown signal
@@ -524,7 +524,7 @@ int main() {
     printf("\nCaught \"%s\" signal, shutting down..\n", strsignal(n));
 
     n = THREADS;
-    THREAD_CLEANUP:
+    out_full_cleanup:
     // Restore original signal mask. This way, if the program hangs, SIGINT/SIGTERM can be raised again to interrupt it in the normal way.
     if (pthread_sigmask(SIG_SETMASK, &originalMask, NULL) != 0) {
         fprintf(stderr, "pthread_sigmask() error: failed to restore original signal mask\n");
@@ -547,19 +547,19 @@ int main() {
         }
     }
 
-    CLEANUP:
+    out_sig:
     lws_context_destroy(context);
 
-    LWS_FAIL_CLEANUP:
+    out_lws:
     if (pthread_cond_destroy(&perIntervalData.termination) != 0) {
         fprintf(stderr, "pthread_cond_destroy() error: failed to destroy termination condition\n");
     }
 
-    EARLY_CLEANUP:
+    out_condattr:
     pthread_condattr_destroy(&monotonic);
     databaseDelete(&consumerData.DB);
 
-    QUEUE_CLEANUP:
+    out_db:
     queueDelete(&consumerData.fifo);
 
     printf("Cleaned up.\n");
@@ -622,7 +622,9 @@ static int checkPearsonMax(pearson_corr pearson, pearson_corr *maxPearson, int c
 }
 
 static enum db_status databaseInit(database *db, const char subsArray[SUBSCRIPTIONS][SUBSIZE]) {
-    int i, j, k;
+    enum db_status ret = DATABASE_SUCCESS;
+
+    int i, j, metricIndex, openFilesPerMetric[METRICS];
     for (i = 0; i < SUBSCRIPTIONS; ++i) {
         db->sumPrices[i] = 0;
         db->totalSize[i] = 0;
@@ -646,33 +648,49 @@ static enum db_status databaseInit(database *db, const char subsArray[SUBSCRIPTI
         }
     }
 
-    for (i = 1; i < METRICS+1; ++i) {
-        k = i-1; // compensating for the fact that there is an extra file path, due to the need for a parent directory "generated-files/"
+    for (i = 1; i <= METRICS; ++i) {
+        metricIndex = i-1; // compensating for the fact that there is an extra file path, due to the need for a parent directory "generated-files/"
+        openFilesPerMetric[metricIndex] = 0;
         for (j = 0; j < SUBSCRIPTIONS; ++j) {
             char fileSpec[strlen(filepaths[i]) + strlen(subsArray[j]) + sizeof(extension)];
             if (snprintf(fileSpec, sizeof(fileSpec), "%s%s%s", filepaths[i], subsArray[j], extension) < 0) {
                 fprintf(stderr, "snprintf() error: failed to print into fileSpec buffer\n");
-                return SNPRINTF_ERROR;
+                ret = SNPRINTF_ERROR;
+                goto out_error;
             }
-            if (k == MOVAVG) {
-                db->files[k][j] = fopen(fileSpec, "w+"); // moving average files will also need to be read
+            if (metricIndex == MOVAVG) {
+                db->files[metricIndex][j] = fopen(fileSpec, "w+"); // moving average files will also need to be read
             }
             else {
-                db->files[k][j] = fopen(fileSpec, "w");
+                db->files[metricIndex][j] = fopen(fileSpec, "w");
             }
-            if (db->files[k][j] == NULL) {
+            if (db->files[metricIndex][j] == NULL) {
                 fprintf(stderr, "fopen() error\n");
-                return FOPEN_ERROR;
+                ret = FOPEN_ERROR;
+                goto out_error;
             }
-            if (fprintf(db->files[k][j], "%s\n", headers[k]) < 0) {
+            ++openFilesPerMetric[metricIndex];
+            if (fprintf(db->files[metricIndex][j], "%s\n", headers[metricIndex]) < 0) {
                 fprintf(stderr, "fprintf() error: failed to print headers\n");
-                return FPRINTF_ERROR;
+                ret = FPRINTF_ERROR;
+                goto out_error;
             }
         }
     }
     pthread_mutex_init(&db->mut, NULL);
+    goto out;
 
-    return DATABASE_SUCCESS;
+    out_error:
+    for (i = 0; i <= metricIndex; ++i) {
+        for (j = 0; j < openFilesPerMetric[i]; ++j) {
+            if (fclose(db->files[i][j]) != 0) {
+                fprintf(stderr, "fclose() error\n");
+            }
+        }
+    }
+
+    out:
+    return ret;
 }
 
 static void databaseDelete(database *db) {
