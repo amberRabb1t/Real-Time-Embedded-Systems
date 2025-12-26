@@ -773,17 +773,17 @@ static void *perInterval (void *perIntervalDataStruct) {
     pearson_corr pearson, maxPearson;
 
     // Declaration and initialization of variables relating to <INTERVALS>-window calculations
-    double sumPrices[SUBSCRIPTIONS][INTERVALS], numTrades[SUBSCRIPTIONS][INTERVALS], totalSize[SUBSCRIPTIONS][INTERVALS],
-           priceAccum, sizeAccum, priceAvg[SUBSCRIPTIONS][DATAPOINTS], slidingAvgVector[DATAPOINTS];
+    double sumPrices[SUBSCRIPTIONS][INTERVALS], totalSize[SUBSCRIPTIONS][INTERVALS], priceAccum, sizeAccum,
+           priceAvg[SUBSCRIPTIONS][DATAPOINTS], slidingAvgVector[DATAPOINTS];
 
-    int i, j, k, tradesAccum, bestIndicator, intervalCount = 0, elapsedIntervals = 0;
+    int i, j, k, numTrades[SUBSCRIPTIONS][INTERVALS], tradesAccum, bestIndicator, intervalCount = 0, elapsedIntervals = 0;
     char line[MAX_LINE+1];
 
     for (i = 0; i < SUBSCRIPTIONS; ++i) {
         for (j = 0; j < INTERVALS; ++j) {
             sumPrices[i][j] = 0;
-            numTrades[i][j] = 0;
             totalSize[i][j] = 0;
+            numTrades[i][j] = 0;
         }
         for (j = 0; j < DATAPOINTS; ++j) {
             priceAvg[i][j] = NAN;
