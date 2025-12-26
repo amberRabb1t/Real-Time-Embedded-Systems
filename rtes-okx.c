@@ -776,7 +776,7 @@ static void *perInterval (void *perIntervalDataStruct) {
     double sumPrices[SUBSCRIPTIONS][INTERVALS], numTrades[SUBSCRIPTIONS][INTERVALS], totalSize[SUBSCRIPTIONS][INTERVALS],
            priceAccum, sizeAccum, priceAvg[SUBSCRIPTIONS][DATAPOINTS], slidingAvgVector[DATAPOINTS];
 
-    int i, j, k, tradesAccum, bestIndicator, intervalCount = 0, minuteCount = 0;
+    int i, j, k, tradesAccum, bestIndicator, intervalCount = 0, elapsedIntervals = 0;
     char line[MAX_LINE+1];
 
     for (i = 0; i < SUBSCRIPTIONS; ++i) {
@@ -832,18 +832,18 @@ static void *perInterval (void *perIntervalDataStruct) {
                 tradesAccum += numTrades[i][j];
             }
             /* Each instrument has a <DATAPOINTS>-long "average price" vector (updated every interval) stored for Pearson correlation coefficient
-               calculations. For the first <DATAPOINTS> intervals (minutes), this vector is simply filled in order. */
-            if (minuteCount < DATAPOINTS) {
+               calculations. For the first <DATAPOINTS> intervals, this vector is simply filled in order. */
+            if (elapsedIntervals < DATAPOINTS) {
                 if (tradesAccum != 0) {
-                    priceAvg[i][minuteCount] = priceAccum / tradesAccum;
+                    priceAvg[i][elapsedIntervals] = priceAccum / tradesAccum;
                 }
                 else {
-                    priceAvg[i][minuteCount] = NAN;
+                    priceAvg[i][elapsedIntervals] = NAN;
                 }
                 // No other thread ever accesses these files so no need to protect access with a mutex
-                fprintf(perIntervalData->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][minuteCount], sizeAccum, unixTimeInMs());
+                fprintf(perIntervalData->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][elapsedIntervals], sizeAccum, unixTimeInMs());
             }
-            /* After the first <DATAPOINTS> minutes, every element of the vector is first shifted one spot towards the "head", while the "head" is
+            /* After the first <DATAPOINTS> intervals, every element of the vector is first shifted one spot towards the "head", while the "head" is
                discarded. The newest entry is added to the "tail". This is necessary to make sure the vector is always aligned oldest-to-newest,
                which is required for some edge cases (relating to potential NaN entries, which can happen if e.g. no data comes for an entire INTERVAL).*/
             else {
@@ -858,7 +858,7 @@ static void *perInterval (void *perIntervalDataStruct) {
                 fprintf(perIntervalData->DB->files[MOVAVG][i], "%lf,%lf,%llu\n", priceAvg[i][DATAPOINTS-1], sizeAccum, unixTimeInMs());
             }
         }
-        ++minuteCount;
+        ++elapsedIntervals;
 
         /* Calculation of Maximum Pearson Correlation Coefficient: for each instrument, what is computed is the coefficient of its latest
            "average price" vector with all past (and current, if applicable) "average price" vectors of every other instrument (and itself),
@@ -869,7 +869,7 @@ static void *perInterval (void *perIntervalDataStruct) {
             maxPearson.coeff = 0;
             maxPearson.corrTime = UNDEFINED;
             for (j = 0; j < SUBSCRIPTIONS; ++j) {
-                if (minuteCount < 2*DATAPOINTS && i == j) {
+                if (elapsedIntervals < 2*DATAPOINTS && i == j) {
                     continue;
                 }
                 rewind(perIntervalData->DB->files[MOVAVG][j]); // go to the start of the moving average file
@@ -878,7 +878,7 @@ static void *perInterval (void *perIntervalDataStruct) {
                 }
 
                 // Get the first <DATAPOINTS> moving averages of the file. This is the first vector to compute the coefficient with.
-                // If <DATAPOINTS> minutes have not passed yet, compute it with whatever values there are.
+                // If <DATAPOINTS> intervals have not passed yet, compute it with whatever values there are.
                 for (k = 0; k < DATAPOINTS && fgets(line, MAX_LINE, perIntervalData->DB->files[MOVAVG][j]) != NULL; ++k) {
                     sscanf(line,"%lf,%*f,%llu\n", &slidingAvgVector[k], &pearson.corrTime);
                 }
@@ -887,7 +887,7 @@ static void *perInterval (void *perIntervalDataStruct) {
                 bestIndicator = checkPearsonMax(pearson, &maxPearson, bestIndicator, j);
 
                 // Next, move down the file line-by-line and compute the new coefficient each time. Stop at <DATAPOINTS> lines before the end of the file
-                for ( ; k < minuteCount-DATAPOINTS && fgets(line, MAX_LINE, perIntervalData->DB->files[MOVAVG][j]) != NULL; ++k) {
+                for ( ; k < elapsedIntervals-DATAPOINTS && fgets(line, MAX_LINE, perIntervalData->DB->files[MOVAVG][j]) != NULL; ++k) {
                     memmove(&slidingAvgVector[0], &slidingAvgVector[1], (DATAPOINTS-1) * sizeof(slidingAvgVector[0])); // again, for alignment purposes
                     sscanf(line,"%lf,%*f,%llu\n", &slidingAvgVector[DATAPOINTS-1], &pearson.corrTime);
 
