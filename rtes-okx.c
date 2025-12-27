@@ -126,7 +126,7 @@ typedef struct {
     void *args;
 } thread_info;
 
-static int strtoi(const char* s);
+static int strtoi(const char *s);
 static unsigned long long unixTimeInMs();
 
 static double pearsonCorrCoeff(int n, double X[n], double Y[n]);
@@ -180,7 +180,7 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
 
         // In case of incoming message from the server
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            if (strncmp((const char*)in, "ping", sizeof("ping")) == 0) {
+            if (strncmp((const char *)in, "ping", sizeof("ping")) == 0) {
                 printf("Received:  Ping\n");
                 return CALLBACK_SUCCESS;
             }
@@ -189,7 +189,7 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
             json_t *root;
             json_error_t error;
 
-            root = json_loads((const char*)in, 0, &error);
+            root = json_loads((const char *)in, 0, &error);
 
             if (!root) {
                 fprintf(stderr, "Error: on line %d: %s\n", error.line, error.text);
@@ -567,7 +567,7 @@ int main() {
     return exitCode;
 }
 
-static int strtoi(const char* s) {
+static int strtoi(const char *s) {
     long x = strtol(s, NULL, 10);
     if (x < INT_MIN || x > INT_MAX) {
         return 0;
@@ -578,7 +578,7 @@ static int strtoi(const char* s) {
 static unsigned long long unixTimeInMs() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    return (unsigned long long)(ts.tv_sec) * 1000 + (unsigned long long)(ts.tv_nsec) / 1000000;
+    return (unsigned long long)(ts.tv_sec)*1000 + (unsigned long long)(ts.tv_nsec)/1000000;
 }
 
 static double pearsonCorrCoeff(int n, double X[n], double Y[n]) {
