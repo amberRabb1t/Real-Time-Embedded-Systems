@@ -583,7 +583,7 @@ static unsigned long long unixTimeInMs() {
 
 static double pearsonCorrCoeff(int n, double X[n], double Y[n]) {
     double Xbar = 0, Ybar = 0, covXY = 0, stdDevX = 0, stdDevY = 0;
-    int i = 0, notNaNcount = 0;
+    int i, notNaNcount = 0;
 
     for (i = 0; i < n; ++i) {
         if (!isnan(X[i]) && !isnan(Y[i])) {
