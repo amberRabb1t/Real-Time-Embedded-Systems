@@ -553,6 +553,7 @@ int main() {
     out_lws:
     if (pthread_cond_destroy(&perIntervalData.termination) != 0) {
         fprintf(stderr, "pthread_cond_destroy() error: failed to destroy termination condition\n");
+        exitCode = EXIT_FAILURE;
     }
 
     out_condattr:
