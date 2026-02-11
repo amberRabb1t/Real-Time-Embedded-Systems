@@ -517,7 +517,6 @@ int main() {
     }
 
     // Wait for program shutdown signal
-    n = 0;
     while (n != SIGINT && n != SIGTERM) {
         sigwait(&terminationMask, &n);
     }
@@ -625,7 +624,7 @@ static int checkPearsonMax(pearson_corr pearson, pearson_corr *maxPearson, int c
 static enum db_status databaseInit(database *db, const char subsArray[SUBSCRIPTIONS][SUBSIZE]) {
     enum db_status ret = DATABASE_SUCCESS;
 
-    int i, j, metricIndex, openFilesPerMetric[METRICS];
+    int i, j, metricIndex, openFiles[METRICS];
     for (i = 0; i < SUBSCRIPTIONS; ++i) {
         db->sumPrices[i] = 0;
         db->totalSize[i] = 0;
@@ -651,7 +650,7 @@ static enum db_status databaseInit(database *db, const char subsArray[SUBSCRIPTI
 
     for (i = 1; i <= METRICS; ++i) {
         metricIndex = i-1; // compensating for the fact that there is an extra file path, due to the need for a parent directory "generated-files/"
-        openFilesPerMetric[metricIndex] = 0;
+        openFiles[metricIndex] = 0;
         for (j = 0; j < SUBSCRIPTIONS; ++j) {
             char fileSpec[strlen(filepaths[i]) + strlen(subsArray[j]) + sizeof(extension)];
             if (snprintf(fileSpec, sizeof(fileSpec), "%s%s%s", filepaths[i], subsArray[j], extension) < 0) {
@@ -670,7 +669,7 @@ static enum db_status databaseInit(database *db, const char subsArray[SUBSCRIPTI
                 ret = FOPEN_ERROR;
                 goto out_error;
             }
-            ++openFilesPerMetric[metricIndex];
+            ++openFiles[metricIndex];
             if (fprintf(db->files[metricIndex][j], "%s\n", headers[metricIndex]) < 0) {
                 fprintf(stderr, "fprintf() error: failed to print headers\n");
                 ret = FPRINTF_ERROR;
@@ -683,7 +682,7 @@ static enum db_status databaseInit(database *db, const char subsArray[SUBSCRIPTI
 
     out_error:
     for (i = 0; i <= metricIndex; ++i) {
-        for (j = 0; j < openFilesPerMetric[i]; ++j) {
+        for (j = 0; j < openFiles[i]; ++j) {
             if (fclose(db->files[i][j]) != 0) {
                 fprintf(stderr, "fclose() error\n");
             }
