@@ -276,15 +276,13 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
                             currentTrade.timeReceived = unixTimeInMs();
 
                             pthread_mutex_lock(&producerData->fifo->mut); // protect against conflict with consumer thread
-                            while (producerData->fifo->full && !producerData->terminationFlag) { // protects against spurious wake-up
-                                printf("producer: queue FULL.\n");	// never happened in practice (with the defined QUEUESIZE)
+                            while (producerData->fifo->full) { // protects against spurious wake-up
+                                if (producerData->terminationFlag) {
+                                    pthread_mutex_unlock(&producerData->fifo->mut);
+                                    json_decref(root);
+                                    return CALLBACK_SUCCESS;
+                                }
                                 pthread_cond_wait(&producerData->fifo->notFull, &producerData->fifo->mut);
-                            }
-                            // Non-spurious wake-up + queue is full = program has initiated shutdown
-                            if (producerData->fifo->full) {
-                                pthread_mutex_unlock(&producerData->fifo->mut);
-                                json_decref(root);
-                                return CALLBACK_SUCCESS;
                             }
                             queueAdd(producerData->fifo, currentTrade);
                             pthread_cond_signal(&producerData->fifo->notEmpty);
@@ -306,10 +304,8 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
         case LWS_CALLBACK_CLIENT_CLOSED: {
             printf("WebSocket connection closed\n");
             producer_data *producerData = lws_context_user(lws_get_context(wsi));
-            if (!producerData->terminationFlag) {
-                lws_retry_sul_schedule_retry_wsi(wsi, &producerData->clientConnectData.sul, connectClient,
+            lws_retry_sul_schedule_retry_wsi(wsi, &producerData->clientConnectData.sul, connectClient,
                                                  &producerData->clientConnectData.retry_count); // see the connectClient function for more details
-            }
             return CALLBACK_SUCCESS;
         }
 
@@ -322,10 +318,8 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
                 fprintf(stderr, "WebSocket connection error\n");
             }
             producer_data *producerData = lws_context_user(lws_get_context(wsi));
-            if (!producerData->terminationFlag) {
-                lws_retry_sul_schedule_retry_wsi(wsi, &producerData->clientConnectData.sul, connectClient,
+            lws_retry_sul_schedule_retry_wsi(wsi, &producerData->clientConnectData.sul, connectClient,
                                                  &producerData->clientConnectData.retry_count); // see the connectClient function for more details
-            }
             return CALLBACK_SUCCESS;
         }
 
@@ -736,14 +730,12 @@ static void *consumer (void *consumerDataStruct) {
 
     while (!consumerData->terminationFlag) {
         pthread_mutex_lock(&consumerData->fifo.mut); // protect against conflict with producer thread
-        while (consumerData->fifo.empty && !consumerData->terminationFlag) { // protects against spurious wake-up
-            //printf("consumer: queue EMPTY.\n");
+        while (consumerData->fifo.empty) { // protects against spurious wake-up
+            if (consumerData->terminationFlag) {
+                pthread_mutex_unlock(&consumerData->fifo.mut);
+                return NULL;
+            }
             pthread_cond_wait(&consumerData->fifo.notEmpty, &consumerData->fifo.mut);
-        }
-        // Non-spurious wake-up + queue is empty = program has initiated shutdown
-        if (consumerData->fifo.empty) {
-            pthread_mutex_unlock(&consumerData->fifo.mut);
-            return NULL;
         }
         queueDel(&consumerData->fifo, &t);
         pthread_cond_signal(&consumerData->fifo.notFull);
@@ -769,7 +761,6 @@ static void *perInterval (void *perIntervalDataStruct) {
     ts.tv_sec += INTERVAL; // this makes the time struct "point" one INTERVAL into the future
 
     per_interval_data *perIntervalData = perIntervalDataStruct;
-
     pearson_corr pearson, maxPearson;
 
     // Declaration and initialization of variables relating to <INTERVALS>-window calculations
@@ -795,18 +786,16 @@ static void *perInterval (void *perIntervalDataStruct) {
 
     while (!perIntervalData->terminationFlag) {
         pthread_mutex_lock(&perIntervalData->DB->mut);
-
         // Unless the timer runs out or program shutdown is initiated, wait
-        while (!perIntervalData->terminationFlag &&
-                pthread_cond_timedwait(&perIntervalData->termination, &perIntervalData->DB->mut, &ts) != ETIMEDOUT);
+        while (pthread_cond_timedwait(&perIntervalData->termination, &perIntervalData->DB->mut, &ts) != ETIMEDOUT) {
+            if (perIntervalData->terminationFlag) {
+                pthread_mutex_unlock(&perIntervalData->DB->mut);
+                return NULL;
+            }
+        }
         // Upon non-spurious wake-up, *immediately* set the time struct one INTERVAL into the future, so that no "drift" occurs due to processing delays
         ts.tv_sec += INTERVAL;
 
-        // If the wake-up was due to program shutdown initiation, don't do the processing - most likely the timer is not near the end of an interval anyway
-        if (perIntervalData->terminationFlag) {
-            pthread_mutex_unlock(&perIntervalData->DB->mut);
-            return NULL;
-        }
         // For every instrument
         for (i = 0; i < SUBSCRIPTIONS; ++i) {
             // Fetch the data of the latest interval
