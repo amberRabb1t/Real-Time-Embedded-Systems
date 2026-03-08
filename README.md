@@ -1,4 +1,4 @@
-# Real-Time-Embedded-Systems
+# Real Time Embedded Systems
 This project constitutes a simple producer-consumer problem. Data comes in via WebSocket and is processed in real-time before being saved.
 The data source used is OKX, which provides a WebSocket API with multiple public channels for receiving cryptocurrency trade data in a constant stream.
 
