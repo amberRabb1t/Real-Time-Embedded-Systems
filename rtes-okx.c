@@ -8,6 +8,7 @@
 #include <inttypes.h>
 #include <stddef.h>
 #include <limits.h>
+#include <errno.h>
 #include <pthread.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -162,24 +163,29 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
         case LWS_CALLBACK_CLIENT_WRITEABLE: {
             producer_data *producerData = lws_context_user(lws_get_context(wsi));
             if (producerData->subCount < SUBSCRIPTIONS) {
-                char subSpec[sizeof("{\"op\":\"subscribe\",\"args\": [{\"channel\": \"trades\",\"instId\": \"\"}]}") +
+                char subSpec[sizeof("{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades\",\"instId\":\"\"}]}") +
                              strlen(producerData->subList[producerData->subCount])];
 
-                while (snprintf(subSpec, sizeof(subSpec), "{\"op\":\"subscribe\",\"args\": [{\"channel\": \"trades\",\"instId\": \"%s\"}]}",
-                         producerData->subList[producerData->subCount]) < 0);
+                while (snprintf(subSpec, sizeof(subSpec), "{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades\",\"instId\":\"%s\"}]}",
+                                producerData->subList[producerData->subCount]) < 0);
 
-                unsigned char buf[LWS_SEND_BUFFER_PRE_PADDING + sizeof(subSpec) + LWS_SEND_BUFFER_POST_PADDING];
+                unsigned char buf[LWS_SEND_BUFFER_PRE_PADDING + strlen(subSpec) + LWS_SEND_BUFFER_POST_PADDING];
                 memset(buf, 0, sizeof(buf));
-                memcpy(&buf[LWS_SEND_BUFFER_PRE_PADDING], subSpec, sizeof(subSpec));
+                memcpy(&buf[LWS_SEND_BUFFER_PRE_PADDING], subSpec, strlen(subSpec));
 
                 //printf("Sending: %s\n", subSpec);
-                lws_write(wsi, &buf[LWS_SEND_BUFFER_PRE_PADDING], sizeof(subSpec), LWS_WRITE_TEXT);
+                lws_write(wsi, &buf[LWS_SEND_BUFFER_PRE_PADDING], strlen(subSpec), LWS_WRITE_TEXT);
             }
             return CALLBACK_SUCCESS;
         }
 
         // In case of incoming message from the server
         case LWS_CALLBACK_CLIENT_RECEIVE: {
+            //printf("Received frame: len=%zu\n", len);
+            //for (size_t i = 0; i < len; i++)
+              //  printf("%02X ", ((unsigned char *)in)[i]);
+            //puts("");
+
             if (strncmp((const char *)in, "ping", sizeof("ping")) == 0) {
                 printf("Received:  Ping\n");
                 return CALLBACK_SUCCESS;
@@ -189,7 +195,7 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
             json_t *root;
             json_error_t error;
 
-            root = json_loads((const char *)in, 0, &error);
+            root = json_loadb((const char *)in, len, 0, &error);
 
             if (!root) {
                 fprintf(stderr, "Error: on line %d: %s\n", error.line, error.text);
@@ -205,10 +211,11 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
                 const char *type_value = json_string_value(type);
 
                 if (strncmp(type_value, "error", sizeof("error")) == 0) {
-                    printf("Received:  Error\n");
+                    printf("Received:  Error: %s\n", json_string_value(json_object_get(root, "msg")));
                     json_decref(root);
                     return OKX_ERROR;
                 }
+
                 producer_data *producerData = lws_context_user(lws_get_context(wsi));
 
                 // A "subscribe" message means an instrument has been successfully subscribed to
@@ -252,14 +259,7 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
                 if (data != NULL) {
                     // Incoming non-NULL trade data handled according to the OKX WebSocket API documentation
                     json_t *metrics = json_array_get(data, 0);
-
-                    json_t *instId = json_object_get(metrics, "instId");
-                    const char *instId_value = (const char *)json_string_value(instId);
-
-                    json_t *cnt_obj = json_object_get(metrics, "count"); // one message may aggregate multiple trades; this is how many were aggregated
-                    json_t *px_obj = json_object_get(metrics, "px"); // trade price; if many trades were aggregated, this is the price of each one (it's the same for all of them, hence why they were grouped)
-                    json_t *sz_obj = json_object_get(metrics, "sz"); // trade size; if many trades were aggregated, this is the TOTAL size of ALL of them combined
-                    json_t *ts_obj = json_object_get(metrics, "ts"); // UNIX timestamp of when the trade was completed, in milliseconds
+                    const char *instId_value = (const char *)json_string_value(json_object_get(metrics, "instId"));
 
                     producer_data *producerData = lws_context_user(lws_get_context(wsi));
 
@@ -268,11 +268,17 @@ static int callbackOKX(struct lws *wsi, enum lws_callback_reasons reason, void *
                         if (strncmp(instId_value, producerData->subscriptions[i], SUBSIZE) == 0) {
                             trade currentTrade;
 
-                            currentTrade.subIndex = i; // mark which instrument this trade belongs to using the "subscriptions" array index that was found
-                            currentTrade.count = strtoi((const char *)json_string_value(cnt_obj));
-                            currentTrade.price = strtod((const char *)json_string_value(px_obj), NULL);
-                            currentTrade.size = strtod((const char *)json_string_value(sz_obj), NULL);
-                            currentTrade.timestamp = strtoull((const char *)json_string_value(ts_obj), NULL, 10);
+                            // mark which instrument this trade belongs to using the "subscriptions" array index that was found
+                            currentTrade.subIndex = i;
+                            // trade count: one message may aggregate multiple trades; this is how many were aggregated
+                            currentTrade.count = strtoi((const char *)json_string_value(json_object_get(metrics, "count")));
+                            // trade price: if many trades were aggregated, this is the price of each one (it's the same for all of them, hence why they were grouped)
+                            currentTrade.price = strtod((const char *)json_string_value(json_object_get(metrics, "px")), NULL);
+                            // trade size: if many trades were aggregated, this is the TOTAL size of ALL of them combined
+                            currentTrade.size = strtod((const char *)json_string_value(json_object_get(metrics, "sz")), NULL);
+                            // UNIX timestamp of when the trade was completed, in milliseconds
+                            currentTrade.timestamp = strtoull((const char *)json_string_value(json_object_get(metrics, "ts")), NULL, 10);
+                            // for time lag calculation
                             currentTrade.timeReceived = unixTimeInMs();
 
                             pthread_mutex_lock(&producerData->fifo->mut); // protect against conflict with consumer thread
@@ -576,13 +582,13 @@ static unsigned long long unixTimeInMs() {
 }
 
 static double pearsonCorrCoeff(int n, double X[n], double Y[n]) {
-    double Xbar = 0, Ybar = 0, covXY = 0, stdDevX = 0, stdDevY = 0;
+    double meanX = 0, meanY = 0, covXY = 0, stdX = 0, stdY = 0;
     int i, notNaNcount = 0;
 
     for (i = 0; i < n; ++i) {
         if (!isnan(X[i]) && !isnan(Y[i])) {
-            Xbar += X[i];
-            Ybar += Y[i];
+            meanX += X[i];
+            meanY += Y[i];
             ++notNaNcount;
         }
     }
@@ -591,19 +597,19 @@ static double pearsonCorrCoeff(int n, double X[n], double Y[n]) {
         return NAN;
     }
 
-    Xbar = Xbar / notNaNcount;
-    Ybar = Ybar / notNaNcount;
+    meanX = meanX / notNaNcount;
+    meanY = meanY / notNaNcount;
     for (i = 0; i < n; ++i) {
         if (!isnan(X[i]) && !isnan(Y[i])) {
-            covXY += (X[i] - Xbar) * (Y[i] - Ybar);
-            stdDevX += pow(X[i] - Xbar, 2);
-            stdDevY += pow(Y[i] - Ybar, 2);
+            covXY += (X[i] - meanX) * (Y[i] - meanY);
+            stdX += (X[i] - meanX) * (X[i] - meanX);
+            stdY += (Y[i] - meanY) * (Y[i] - meanY);
         }
     }
-    if (stdDevX == 0 || stdDevY == 0) {
+    if (stdX == 0 || stdY == 0) {
         return NAN;
     }
-    return covXY / sqrt(stdDevX*stdDevY);
+    return covXY / sqrt(stdX*stdY);
 }
 
 static int checkPearsonMax(pearson_corr pearson, pearson_corr *maxPearson, int currentBestIndicator, int instrumentBeingChecked) {
@@ -909,9 +915,13 @@ static void *perInterval (void *perIntervalDataStruct) {
                                                                                       unixTimeInMs());
             }
         }
+        fseek(perIntervalData->DB->files[MOVAVG][i-1], 0, SEEK_END);
         for (i = 0; i < SUBSCRIPTIONS; ++i) {
             if (ferror(perIntervalData->DB->files[MOVAVG][i]) != 0) {
-                fseek(perIntervalData->DB->files[MOVAVG][i], 0, SEEK_END);
+                perror("Encountered file error");
+                if (fseek(perIntervalData->DB->files[MOVAVG][i], 0, SEEK_END) == 0) {
+                    clearerr(perIntervalData->DB->files[MOVAVG][i]);
+                }
             }
         }
         // A kind of simplified "circular buffer"
