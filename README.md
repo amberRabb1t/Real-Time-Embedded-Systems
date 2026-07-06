@@ -8,3 +8,5 @@ As such, the focus is on both reliability (e.g. disruption to the network should
 Alternate links for the libwebsockets API documentation references, in case libwebsockets.org is down:
 -  Referenced in the report:  https://github.com/warmcat/libwebsockets/blob/main/READMEs/README.coding.md (to find what the reference is talking about, CTRL+F "single")
 -  Referenced in a code comment:  https://github.com/warmcat/libwebsockets/blob/main/minimal-examples-lowlevel/ws-client/minimal-ws-client/minimal-ws-client.c
+
+NOTE: The 'main' branch contains the original version of the code, as uploaded for the university project. OKX has since then made a change to its API that breaks the program. For a functional and improved version, see the 'develop' branch.
